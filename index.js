@@ -26,6 +26,7 @@ async function run() {
     const database = client.db("skillswap-db");
     const jobCollection = database.collection("tasks");
     const freelancerCollection = database.collection("freelancers");
+    const proposalCollection = database.collection("proposals");
 
     // --- TASK ROUTES ---
 
@@ -102,6 +103,21 @@ async function run() {
       const totalTasks = await jobCollection.countDocuments();
       const totalFreelancers = await freelancerCollection.countDocuments();
       res.send({ totalTasks, totalFreelancers });
+    });
+
+
+    app.post('/proposals', async (req, res) => {
+      const newProposal = req.body;
+      const result = await proposalCollection.insertOne(newProposal);
+      res.send(result);
+    });
+
+    // নির্দিষ্ট ক্লায়েন্টের সব প্রপোজাল দেখা
+    app.get('/proposals', async (req, res) => {
+      const { email } = req.query;
+      const query = { client_email: email };
+      const result = await proposalCollection.find(query).toArray();
+      res.send(result);
     });
 
     await client.db("admin").command({ ping: 1 });
