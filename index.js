@@ -27,7 +27,6 @@ async function run() {
     const freelancerCollection = database.collection("freelancers");
     const proposalCollection = database.collection("proposals");
 
-
     app.get('/tasks', async (req, res) => {
       const { email, page, limit, search, category, status } = req.query;
       let query = {};
@@ -63,27 +62,22 @@ async function run() {
       result ? res.send(result) : res.status(404).send({ message: "Task not found" });
     });
 
-    
     app.get('/latest-tasks', async (req, res) => {
       const result = await jobCollection.find().sort({ _id: -1 }).limit(6).toArray();
       res.send(result);
     });
 
-   
     app.delete('/tasks/:id', async (req, res) => {
       const result = await jobCollection.deleteOne({ _id: new ObjectId(req.params.id) });
       res.send(result);
     });
 
-    
     app.put('/tasks/:id', async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       const updateDoc = { $set: req.body };
       const result = await jobCollection.updateOne(filter, updateDoc);
       res.send(result);
     });
-
-  
 
     app.get('/all-freelancers', async (req, res) => {
       res.send(await freelancerCollection.find().toArray());
@@ -104,24 +98,31 @@ async function run() {
       res.send({ totalTasks, totalFreelancers });
     });
 
-
     app.post('/proposals', async (req, res) => {
       const newProposal = req.body;
       const result = await proposalCollection.insertOne(newProposal);
       res.send(result);
     });
 
+    // ক্লায়েন্ট অথবা ফ্রিল্যান্সার অনুযায়ী আলাদা প্রপোজাল লিস্ট
     app.get('/proposals', async (req, res) => {
       const { email, role } = req.query;
-      let query = {};
 
       if (email && role === 'freelancer') {
-        query.freelancer_email = email;
-      } else if (email) {
-        query.client_email = email;
+        const result = await proposalCollection.find({ freelancer_email: email }).toArray();
+        return res.send(result);
       }
 
-      const result = await proposalCollection.find(query).toArray();
+      if (email) {
+        // ক্লায়েন্টের জন্য: আগে তার নিজের সব task এর id বের করা হচ্ছে
+        const clientTasks = await jobCollection.find({ client_email: email }).toArray();
+        const taskIds = clientTasks.map(t => t._id.toString());
+
+        const result = await proposalCollection.find({ task_id: { $in: taskIds } }).toArray();
+        return res.send(result);
+      }
+
+      const result = await proposalCollection.find().toArray();
       res.send(result);
     });
 
@@ -172,7 +173,6 @@ async function run() {
       }
     });
 
-
     app.patch('/user-profile/:email', async (req, res) => {
       const email = req.params.email;
       const updateData = req.body;
@@ -184,8 +184,6 @@ async function run() {
 
       res.send(result);
     });
-
-
 
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
