@@ -6,7 +6,6 @@ const { ObjectId, MongoClient, ServerApiVersion } = require('mongodb');
 const app = express();
 const port = 5000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -28,32 +27,30 @@ async function run() {
     const freelancerCollection = database.collection("freelancers");
     const proposalCollection = database.collection("proposals");
 
-    // --- TASK ROUTES ---
 
-    // সব টাস্ক (সার্চ, ফিল্টার এবং পেজিনেশনসহ)
     app.get('/tasks', async (req, res) => {
-      const { email, page, limit, search, category } = req.query;
+      const { email, page, limit, search, category, status } = req.query;
       let query = {};
 
       if (email) query.client_email = email;
       if (search) query.title = { $regex: search, $options: 'i' };
       if (category && category !== 'all') query.category = category;
+      if (status) query.status = status;
 
       const cursor = jobCollection.find(query);
 
       if (page !== undefined && limit !== undefined) {
+        const totalCount = await jobCollection.countDocuments(query);
         const result = await cursor
           .skip(parseInt(page) * parseInt(limit))
           .limit(parseInt(limit))
           .toArray();
-        res.send(result);
+        res.send({ tasks: result, totalCount });
       } else {
         const result = await cursor.toArray();
         res.send(result);
       }
     });
-
-
 
     app.post('/tasks', async (req, res) => {
       const newTask = req.body;
@@ -61,21 +58,24 @@ async function run() {
       res.send(result);
     });
 
+    app.get('/tasks/:id', async (req, res) => {
+      const result = await jobCollection.findOne({ _id: new ObjectId(req.params.id) });
+      result ? res.send(result) : res.status(404).send({ message: "Task not found" });
+    });
 
-
-    // লেটেস্ট ৬টি টাস্ক
+    
     app.get('/latest-tasks', async (req, res) => {
       const result = await jobCollection.find().sort({ _id: -1 }).limit(6).toArray();
       res.send(result);
     });
 
-    // টাস্ক ডিলিট
+   
     app.delete('/tasks/:id', async (req, res) => {
       const result = await jobCollection.deleteOne({ _id: new ObjectId(req.params.id) });
       res.send(result);
     });
 
-    // টাস্ক আপডেট
+    
     app.put('/tasks/:id', async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       const updateDoc = { $set: req.body };
@@ -83,7 +83,7 @@ async function run() {
       res.send(result);
     });
 
-    // --- FREELANCER ROUTES ---
+  
 
     app.get('/all-freelancers', async (req, res) => {
       res.send(await freelancerCollection.find().toArray());
@@ -98,7 +98,6 @@ async function run() {
       result ? res.send(result) : res.status(404).send({ message: "Not found" });
     });
 
-    // --- STATS ROUTE ---
     app.get('/platform-stats', async (req, res) => {
       const totalTasks = await jobCollection.countDocuments();
       const totalFreelancers = await freelancerCollection.countDocuments();
@@ -112,18 +111,86 @@ async function run() {
       res.send(result);
     });
 
-    // নির্দিষ্ট ক্লায়েন্টের সব প্রপোজাল দেখা
     app.get('/proposals', async (req, res) => {
-      const { email } = req.query;
-      const query = { client_email: email };
+      const { email, role } = req.query;
+      let query = {};
+
+      if (email && role === 'freelancer') {
+        query.freelancer_email = email;
+      } else if (email) {
+        query.client_email = email;
+      }
+
       const result = await proposalCollection.find(query).toArray();
       res.send(result);
     });
 
+    app.patch('/proposals/:id', async (req, res) => {
+      const filter = { _id: new ObjectId(req.params.id) };
+      const updateDoc = { $set: req.body };
+      const result = await proposalCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    app.get('/proposals/check', async (req, res) => {
+      const { task_id, freelancer_email } = req.query;
+      const existing = await proposalCollection.findOne({ task_id, freelancer_email });
+      res.send({ exists: !!existing });
+    });
+
+    app.get('/freelancer-stats/:email', async (req, res) => {
+      const email = req.params.email;
+
+      const totalProposals = await proposalCollection.countDocuments({ freelancer_email: email });
+      const pendingProposals = await proposalCollection.countDocuments({ freelancer_email: email, status: 'pending' });
+      const acceptedProposals = await proposalCollection.countDocuments({ freelancer_email: email, status: 'accepted' });
+
+      const earningsResult = await jobCollection.find({
+        assigned_freelancer: email,
+        status: 'Completed'
+      }).toArray();
+
+      const totalEarnings = earningsResult.reduce((sum, task) => sum + (task.budget || 0), 0);
+
+      res.send({
+        totalProposals,
+        pendingProposals,
+        acceptedProposals,
+        totalEarnings
+      });
+    });
+
+    app.get('/user-profile/:email', async (req, res) => {
+      const email = req.params.email;
+      const result = await freelancerCollection.findOne({ email: email });
+      const user = result || await database.collection("user").findOne({ email: email });
+
+      if (user) {
+        res.send(user);
+      } else {
+        res.status(404).send({ message: "User not found" });
+      }
+    });
+
+
+    app.patch('/user-profile/:email', async (req, res) => {
+      const email = req.params.email;
+      const updateData = req.body;
+
+      const result = await database.collection("user").updateOne(
+        { email: email },
+        { $set: updateData }
+      );
+
+      res.send(result);
+    });
+
+
+
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
   } finally {
-    // client.close(); // এটি কমেন্ট আউট রাখা ভালো যাতে কানেকশন খোলা থাকে
+
   }
 }
 run().catch(console.dir);
