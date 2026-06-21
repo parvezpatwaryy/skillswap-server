@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { ObjectId, MongoClient, ServerApiVersion } = require('mongodb');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
 
 const app = express();
 const port = 5000;
@@ -26,6 +27,8 @@ async function run() {
     const jobCollection = database.collection("tasks");
     const freelancerCollection = database.collection("freelancers");
     const proposalCollection = database.collection("proposals");
+    const userCollection = database.collection("user");
+    const paymentCollection = database.collection("payments");
 
     app.get('/tasks', async (req, res) => {
       const { email, page, limit, search, category, status } = req.query;
@@ -184,6 +187,142 @@ async function run() {
 
       res.send(result);
     });
+
+    // ---- Admin Overview Stats ----
+    app.get('/admin-stats', async (req, res) => {
+      const totalUsers = await userCollection.countDocuments();
+      const totalTasks = await jobCollection.countDocuments();
+      const activeTasks = await jobCollection.countDocuments({ status: 'In Progress' });
+
+      const revenueResult = await paymentCollection.aggregate([
+        { $match: { payment_status: 'succeeded' } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]).toArray();
+      const totalRevenue = revenueResult[0]?.total || 0;
+
+      res.send({ totalUsers, totalTasks, activeTasks, totalRevenue });
+    });
+
+    // ---- Manage Users ----
+    app.get('/users', async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.patch('/users/:id/block', async (req, res) => {
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { isBlocked: true } }
+      );
+      res.send(result);
+    });
+
+    app.patch('/users/:id/unblock', async (req, res) => {
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { isBlocked: false } }
+      );
+      res.send(result);
+    });
+
+    // ---- Payments / Transactions ----
+    app.get('/payments', async (req, res) => {
+      const result = await paymentCollection.find().sort({ paid_at: -1 }).toArray();
+      res.send(result);
+    });
+
+
+
+// 👇👇👇 এখানে নতুন কোড বসান 👇👇👇
+
+// ---- Stripe: Checkout Session তৈরি করা ----
+app.post('/create-checkout-session', async (req, res) => {
+  const { task_id, proposal_id, amount, task_title, freelancer_email, client_email } = req.body;
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'payment',
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: { name: task_title },
+            unit_amount: Math.round(amount * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/client/proposals`,
+      metadata: {
+        task_id,
+        proposal_id,
+        freelancer_email,
+        client_email,
+        amount: amount.toString(),
+      },
+    });
+
+    res.send({ url: session.url });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Checkout session তৈরি করা যায়নি" });
+  }
+});
+
+// ---- Stripe: Payment Confirm করা ----
+app.post('/confirm-session', async (req, res) => {
+  const { session_id } = req.body;
+
+  try {
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+
+    if (session.payment_status !== 'paid') {
+      return res.status(400).send({ message: "পেমেন্ট সম্পন্ন হয়নি" });
+    }
+
+    const { task_id, proposal_id, freelancer_email, client_email, amount } = session.metadata;
+
+    const existing = await paymentCollection.findOne({ transaction_id: session.payment_intent });
+    if (existing) {
+      return res.send({ message: "আগেই সেভ করা আছে", payment: existing });
+    }
+
+    const paymentDoc = {
+      client_email,
+      freelancer_email,
+      task_id,
+      amount: parseFloat(amount),
+      transaction_id: session.payment_intent,
+      payment_status: 'succeeded',
+      paid_at: new Date(),
+    };
+    await paymentCollection.insertOne(paymentDoc);
+
+    await jobCollection.updateOne(
+      { _id: new ObjectId(task_id) },
+      { $set: { status: 'In Progress' } }
+    );
+
+    await proposalCollection.updateOne(
+      { _id: new ObjectId(proposal_id) },
+      { $set: { status: 'accepted' } }
+    );
+
+    await proposalCollection.updateMany(
+      { task_id: task_id, _id: { $ne: new ObjectId(proposal_id) } },
+      { $set: { status: 'Rejected' } }
+    );
+
+    res.send({ message: "পেমেন্ট কনফার্ম হয়েছে", payment: paymentDoc });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Confirm করতে সমস্যা হয়েছে" });
+  }
+});
+
+
 
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
