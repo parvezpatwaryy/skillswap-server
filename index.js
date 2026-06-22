@@ -200,7 +200,6 @@ async function run() {
       res.send({ totalUsers, totalTasks, activeTasks, totalRevenue });
     });
 
-    // ---- Manage Users ----
     app.get('/users', async (req, res) => {
       const result = await userCollection.find().toArray();
       res.send(result);
@@ -222,18 +221,13 @@ async function run() {
       res.send(result);
     });
 
-    // ---- Payments / Transactions ----
     app.get('/payments', async (req, res) => {
       const result = await paymentCollection.find().sort({ paid_at: -1 }).toArray();
       res.send(result);
     });
 
-    // ---- Stripe: Checkout Session তৈরি করা ----
     app.post('/create-checkout-session', async (req, res) => {
       const { task_id, proposal_id, amount, task_title, freelancer_email, client_email } = req.body;
-
-      // ডিবাগ করার জন্য — backend টার্মিনালে দেখা যাবে আসলে কী ডেটা আসছে
-      console.log("create-checkout-session body:", req.body);
 
       try {
         if (!amount || isNaN(amount)) {
@@ -266,7 +260,6 @@ async function run() {
 
         res.send({ url: session.url });
       } catch (error) {
-        // 👇 এই লাইনটাই সবচেয়ে গুরুত্বপূর্ণ — exact কারণ টার্মিনালে দেখাবে
         console.error("STRIPE ERROR:", error.message);
         res.status(500).send({ message: "Checkout session তৈরি করা যায়নি", error: error.message });
       }
@@ -322,7 +315,7 @@ async function run() {
       }
     });
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
   } finally {
 
