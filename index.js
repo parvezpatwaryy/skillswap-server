@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { ObjectId, MongoClient, ServerApiVersion } = require('mongodb');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); 
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const port = 5000;
@@ -117,7 +117,6 @@ async function run() {
       }
 
       if (email) {
-        // ক্লায়েন্টের জন্য: আগে তার নিজের সব task এর id বের করা হচ্ছে
         const clientTasks = await jobCollection.find({ client_email: email }).toArray();
         const taskIds = clientTasks.map(t => t._id.toString());
 
@@ -231,98 +230,99 @@ async function run() {
       res.send(result);
     });
 
+    // ---- Stripe: Checkout Session তৈরি করা ----
+    app.post('/create-checkout-session', async (req, res) => {
+      const { task_id, proposal_id, amount, task_title, freelancer_email, client_email } = req.body;
 
+      // ডিবাগ করার জন্য — backend টার্মিনালে দেখা যাবে আসলে কী ডেটা আসছে
+      console.log("create-checkout-session body:", req.body);
 
-// 👇👇👇 এখানে নতুন কোড বসান 👇👇👇
+      try {
+        if (!amount || isNaN(amount)) {
+          throw new Error(`Invalid amount received: ${amount}`);
+        }
 
-// ---- Stripe: Checkout Session তৈরি করা ----
-app.post('/create-checkout-session', async (req, res) => {
-  const { task_id, proposal_id, amount, task_title, freelancer_email, client_email } = req.body;
-
-  try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      mode: 'payment',
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: { name: task_title },
-            unit_amount: Math.round(amount * 100),
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ['card'],
+          mode: 'payment',
+          line_items: [
+            {
+              price_data: {
+                currency: 'usd',
+                product_data: { name: task_title || "Task Payment" },
+                unit_amount: Math.round(Number(amount) * 100),
+              },
+              quantity: 1,
+            },
+          ],
+          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_URL}/dashboard/client/proposals`,
+          metadata: {
+            task_id: task_id || "",
+            proposal_id: proposal_id || "",
+            freelancer_email: freelancer_email || "",
+            client_email: client_email || "",
+            amount: amount.toString(),
           },
-          quantity: 1,
-        },
-      ],
-      success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/dashboard/client/proposals`,
-      metadata: {
-        task_id,
-        proposal_id,
-        freelancer_email,
-        client_email,
-        amount: amount.toString(),
-      },
+        });
+
+        res.send({ url: session.url });
+      } catch (error) {
+        // 👇 এই লাইনটাই সবচেয়ে গুরুত্বপূর্ণ — exact কারণ টার্মিনালে দেখাবে
+        console.error("STRIPE ERROR:", error.message);
+        res.status(500).send({ message: "Checkout session তৈরি করা যায়নি", error: error.message });
+      }
     });
 
-    res.send({ url: session.url });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send({ message: "Checkout session তৈরি করা যায়নি" });
-  }
-});
+    app.post('/confirm-session', async (req, res) => {
+      const { session_id } = req.body;
 
-// ---- Stripe: Payment Confirm করা ----
-app.post('/confirm-session', async (req, res) => {
-  const { session_id } = req.body;
+      try {
+        const session = await stripe.checkout.sessions.retrieve(session_id);
 
-  try {
-    const session = await stripe.checkout.sessions.retrieve(session_id);
+        if (session.payment_status !== 'paid') {
+          return res.status(400).send({ message: "পেমেন্ট সম্পন্ন হয়নি" });
+        }
 
-    if (session.payment_status !== 'paid') {
-      return res.status(400).send({ message: "পেমেন্ট সম্পন্ন হয়নি" });
-    }
+        const { task_id, proposal_id, freelancer_email, client_email, amount } = session.metadata;
 
-    const { task_id, proposal_id, freelancer_email, client_email, amount } = session.metadata;
+        const existing = await paymentCollection.findOne({ transaction_id: session.payment_intent });
+        if (existing) {
+          return res.send({ message: "আগেই সেভ করা আছে", payment: existing });
+        }
 
-    const existing = await paymentCollection.findOne({ transaction_id: session.payment_intent });
-    if (existing) {
-      return res.send({ message: "আগেই সেভ করা আছে", payment: existing });
-    }
+        const paymentDoc = {
+          client_email,
+          freelancer_email,
+          task_id,
+          amount: parseFloat(amount),
+          transaction_id: session.payment_intent,
+          payment_status: 'succeeded',
+          paid_at: new Date(),
+        };
+        await paymentCollection.insertOne(paymentDoc);
 
-    const paymentDoc = {
-      client_email,
-      freelancer_email,
-      task_id,
-      amount: parseFloat(amount),
-      transaction_id: session.payment_intent,
-      payment_status: 'succeeded',
-      paid_at: new Date(),
-    };
-    await paymentCollection.insertOne(paymentDoc);
+        await jobCollection.updateOne(
+          { _id: new ObjectId(task_id) },
+          { $set: { status: 'In Progress' } }
+        );
 
-    await jobCollection.updateOne(
-      { _id: new ObjectId(task_id) },
-      { $set: { status: 'In Progress' } }
-    );
+        await proposalCollection.updateOne(
+          { _id: new ObjectId(proposal_id) },
+          { $set: { status: 'accepted' } }
+        );
 
-    await proposalCollection.updateOne(
-      { _id: new ObjectId(proposal_id) },
-      { $set: { status: 'accepted' } }
-    );
+        await proposalCollection.updateMany(
+          { task_id: task_id, _id: { $ne: new ObjectId(proposal_id) } },
+          { $set: { status: 'Rejected' } }
+        );
 
-    await proposalCollection.updateMany(
-      { task_id: task_id, _id: { $ne: new ObjectId(proposal_id) } },
-      { $set: { status: 'Rejected' } }
-    );
-
-    res.send({ message: "পেমেন্ট কনফার্ম হয়েছে", payment: paymentDoc });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send({ message: "Confirm করতে সমস্যা হয়েছে" });
-  }
-});
-
-
+        res.send({ message: "পেমেন্ট কনফার্ম হয়েছে", payment: paymentDoc });
+      } catch (error) {
+        console.error("CONFIRM SESSION ERROR:", error.message);
+        res.status(500).send({ message: "Confirm করতে সমস্যা হয়েছে", error: error.message });
+      }
+    });
 
     await client.db("admin").command({ ping: 1 });
     console.log("Connected to MongoDB!");
