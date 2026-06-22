@@ -107,7 +107,6 @@ async function run() {
       res.send(result);
     });
 
-    // ক্লায়েন্ট অথবা ফ্রিল্যান্সার অনুযায়ী আলাদা প্রপোজাল লিস্ট
     app.get('/proposals', async (req, res) => {
       const { email, role } = req.query;
 
@@ -187,7 +186,6 @@ async function run() {
       res.send(result);
     });
 
-    // ---- Admin Overview Stats ----
     app.get('/admin-stats', async (req, res) => {
       const totalUsers = await userCollection.countDocuments();
       const totalTasks = await jobCollection.countDocuments();
