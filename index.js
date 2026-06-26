@@ -19,9 +19,13 @@ const client = new MongoClient(uri, {
   }
 });
 
-async function run() {
-  try {
-    await client.connect();
+// async function run() {
+//   try {
+//     await client.connect();
+
+client.connect(()=>{
+  console.log("connecting to Mongo db")
+}).catch(console.dir)
 
     const database = client.db("skillswap-db");
     const jobCollection = database.collection("tasks");
@@ -247,8 +251,8 @@ async function run() {
               quantity: 1,
             },
           ],
-          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.CLIENT_URL}/dashboard/client/proposals`,
+          success_url: `https://skillswap-client-snowy.vercel.app/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `https://skillswap-client-snowy.vercel.app/dashboard/client/proposals`,
           metadata: {
             task_id: task_id || "",
             proposal_id: proposal_id || "",
@@ -316,12 +320,12 @@ async function run() {
     });
 
     // await client.db("admin").command({ ping: 1 });
-    console.log("Connected to MongoDB!");
-  } finally {
+//     console.log("Connected to MongoDB!");
+//   } finally {
 
-  }
-}
-run().catch(console.dir);
+//   }
+// }
+// run().catch(console.dir);
 
 app.get('/', (req, res) => res.send('SkillSwap Server is running!'));
 app.listen(port, () => console.log(`Server running on port ${port}`));
